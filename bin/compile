@@ -115,7 +115,7 @@ mkdir -p "$SBT_USER_HOME/.sbt/plugins" && curl --silent --max-time 10 --location
 #echo " done"
 
 # build app
-SBT_TASKS="clean compile test stage"
+SBT_TASKS="'project $SBT_MODULE'clean compile test stage"
 echo "-----> Running: sbt $SBT_TASKS"
 test -e "$SBT_BINDIR"/sbt.boot.properties && PROPS_OPTION="-Dsbt.boot.properties=$SBT_BINDIR/sbt.boot.properties"
 HOME="$SBT_USER_HOME_ABSOLUTE" java -Xmx512M -Dfile.encoding=UTF8 -Duser.home="$SBT_USER_HOME_ABSOLUTE" -Divy.default.ivy.user.dir="$SBT_USER_HOME_ABSOLUTE/.ivy2" $PROPS_OPTION -jar "$SBT_BINDIR"/$SBT_JAR $SBT_TASKS 2>&1 | sed -u 's/^/       /'
