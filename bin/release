@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# bin/release <build-dir>
+
+cat <<EOF
+---
+config_vars:
+  PATH: .sbt_home/bin:/usr/local/bin:/usr/bin:/bin
+  JAVA_OPTS: -Xmx384m -Xss512k -XX:+UseCompressedOops
+  SBT_OPTS: -Xmx384m -Xss512k -XX:+UseCompressedOops
+  REPO: /app/.sbt_home/.ivy2/cache
+addons:
+  shared-database:5mb
+
+EOF
