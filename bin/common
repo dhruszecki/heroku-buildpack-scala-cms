@@ -237,6 +237,7 @@ run_sbt()
   JAVA_OPTS="$JAVA_OPTS -Dsbt.global.base=$home"
 
   echo "-----> Running: sbt $tasks"
+  echo "-----> Running: $home java $JAVA_OPTS -jar $launcher $tasks"
   HOME="$home" java $JAVA_OPTS -jar $launcher $tasks < /dev/null 2>&1 | sed -u 's/^/       /'
 
   if [ "${PIPESTATUS[*]}" != "0 0" ]; then
