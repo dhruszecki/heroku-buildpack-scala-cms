@@ -123,7 +123,7 @@ if [ ! -d "$SBT_USER_HOME/.ivy2" ]; then
 fi
 
 # build app
-run_sbt- "project platform" "$SBT_USER_HOME_ABSOLUTE" "$SBT_BINDIR/$SBT_JAR" "$SBT_TASKS"
+run_sbt "project platform" "$SBT_USER_HOME_ABSOLUTE" "$SBT_BINDIR/$SBT_JAR" "$SBT_TASKS"
 
 PROFILE_PATH="$BUILD_DIR/.profile.d/scala.sh"
 mkdir -p $(dirname $PROFILE_PATH)
