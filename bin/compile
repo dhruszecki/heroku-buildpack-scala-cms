@@ -1,14 +1,45 @@
 #!/usr/bin/env bash
-# bin/compile <build-dir> <cache-dir>
+# bin/compile <build-dir> <cache-dir> <env-dir>
 
 # fail fast
 set -e
 
-BIN_DIR=$(cd $(dirname $0); pwd) # absolute path
+BP_DIR=$(cd $(dirname $0)/..; pwd) # absolute path
+BIN_DIR=$BP_DIR/bin
+OPT_DIR=$BP_DIR/opt
+. $BIN_DIR/common
 
 # parse args
-BUILD_DIR=$(cd $1; pwd)
+APP_BUILD_DIR=$(cd $1; pwd)
 CACHE_DIR=$2
+ENV_DIR=$3
+
+# Move app to a static build dir to keep paths the same between builds
+BUILD_DIR="/tmp/scala_buildpack_build_dir"
+mv $APP_BUILD_DIR $BUILD_DIR
+
+JVM_COMMON_BUILDPACK=http://lang-jvm.s3.amazonaws.com/jvm-buildpack-common-v1.0.tar.gz
+mkdir -p /tmp/jvm-common
+curl --silent --location $JVM_COMMON_BUILDPACK | tar xzm -C /tmp/jvm-common
+. /tmp/jvm-common/bin/util
+. /tmp/jvm-common/bin/java
+
+export_env_dir $ENV_DIR
+
+#create the cache dir if it doesn't exist
+mkdir -p $CACHE_DIR
+
+# create default system.properties
+if [ ! -f ${BUILD_DIR}/system.properties ]; then
+  echo "java.runtime.version=1.6" > ${BUILD_DIR}/system.properties
+fi
+
+# install JDK
+javaVersion=$(detect_java_version ${BUILD_DIR})
+echo -n "-----> Installing OpenJDK ${javaVersion}..."
+install_java ${BUILD_DIR} ${javaVersion}
+jdk_overlay ${BUILD_DIR}
+echo "done"
 
 # home directory from perspective of SBT; we rename
 # it because otherwise the project root and $HOME
@@ -23,48 +54,37 @@ SBT_BINDIR="$SBT_USER_HOME"/bin
 cd $BUILD_DIR
 
 # unpack cache
-CACHED_DIRS="$SBT_USER_HOME/.ivy2 $SBT_BINDIR"
+CACHED_DIRS="$SBT_USER_HOME/.ivy2 $SBT_USER_HOME/boot $SBT_BINDIR target project/target project/boot"
 for DIR in $CACHED_DIRS; do
-  rm -rf $DIR
-  if [ -d $CACHE_DIR/$DIR ]; then
-    mkdir -p $DIR
-    cp -r $CACHE_DIR/$DIR/.  $DIR
-  fi
+  cache_copy $DIR $CACHE_DIR $BUILD_DIR
 done
 
+# these are preliminary checks. actual version check happens below when attempting to download sbt boot.properties
 if ! test -e project/build.properties; then
 	echo " !      Error, your scala project must include project/build.properties and define sbt.version"
-	echo " !      You must use a release verison of sbt, sbt.version=0.11.0 or greater"
+	echo " !      You must use a release version of sbt, sbt.version=0.11.0 or greater"
         exit 1
 fi
 
-    
-if grep -q -v 'sbt.version *= *0\.11\.[0-9]' project/build.properties; then
+if ! has_supported_sbt_version ${BUILD_DIR}; then
 	echo " !      Error, you have defined an unsupported sbt.version in project/build.properties"
-	echo " !      You must use a release verison of sbt, sbt.version=0.11.0 or greater"
+	echo " !      You must use a release version of sbt, sbt.version=0.11.0 or greater"
 	exit 1
 fi
 
-if grep -q 'sbt.version *= *0\.11\.[0-9]-RC' project/build.properties; then
-	echo " !      Error, you have defined an unsupported sbt.version in project/build.properties"
-	echo " !      You must use a release verison of sbt, sbt.version=0.11.0 or greater"
-	exit 1
-fi
-
-
-
-SBT_VERSION="0.11.0"
-SBT_JAR="sbt-launch-$SBT_VERSION.jar"
-SBT_PROPS="sbt-$SBT_VERSION.boot.properties"
-SBT_URL="http://s3.amazonaws.com/heroku-jvm-langpack-scala/$SBT_JAR"
-SBT_PROPS_URL="http://s3.amazonaws.com/heroku-jvm-langpack-scala/$SBT_PROPS"
-#0.10.1 SBT_SHA1="b41d79cb2d919a0e8732fb8ef4e71347cceea90a" 
-#0.11.0-RC1 SBT_SHA1="85abf74a24593c2b2ea5b033ef01c47b11c04740"
-SBT_SHA1="5b15ba0fc63e355d47293def4bc2e58da6f03787"
+SBT_VERSION="$(get_supported_sbt_version ${BUILD_DIR})"
+SBT_JAR="sbt-launch.jar"
+SBT_URL="http://typesafe.artifactoryonline.com/typesafe/ivy-releases/org.scala-sbt/sbt-launch/0.13.5/$SBT_JAR"
 ## in 0.10 start-script will depend on package, if packaging
 ## is required - it may not be, we can run .class files or a package-war
 ## instead.
+SBT_TASKS="compile stage"
 
+# To enable clean compiles, configure the environment to clean:
+# $ heroku config:set SBT_CLEAN=true
+# $ git push heroku master
+# See: https://devcenter.heroku.com/articles/scala-support#clean-builds
+[ "$SBT_CLEAN" = "true" ] && SBT_TASKS="clean $SBT_TASKS"
 
 if [ ! -d .ivy2/cache ]; then
    mkdir -p .ivy2/cache
@@ -77,59 +97,61 @@ if [ ! -f "$SBT_BINDIR"/"$SBT_JAR" ]; then
   ## clean up any old versions
   /bin/rm -f sbt sbt-launch-*.jar || true
 
-  echo "-----> Building app with sbt v0.11.0"
-  curl --silent --max-time 60 -O --location $SBT_URL
-
-  ## some of the downloads don't have the version in the name,
-  ## fix it.
-  if [ -f "sbt-launch.jar" ] ; then
-      mv "sbt-launch.jar" "$SBT_JAR"
-  fi
-
-  ## verify SHA1
-  FOUND_SHA1=`openssl sha1 $SBT_JAR | sed -r "s/^.*= (.*)$/\1/"`
-  if test "$SBT_SHA1" != "$FOUND_SHA1" ; then
-      echo " failed"
-      echo " !     Expected SHA1 \"$SBT_SHA1\" but found \"$FOUND_SHA1\" for $SBT_JAR from $SBT_URL"
-      exit 1
-  fi
+  echo -n "-----> Downloading SBT..."
+  curl --silent --max-time 60 -O --location $SBT_URL --fail || error "Failed to download $SBT_JAR"
+  echo "done"
 
   cd $BUILD_DIR
 fi
 
-#copy the sbt script (do this every time so we can change it if necessary,
-#for example if switching sbt version, or just updates to the script)
-cp "$BIN_DIR/../opt/sbt-$SBT_VERSION" "$SBT_BINDIR"/sbt
+# Install the custom sbt script for cmds like `heroku run sbt console`
+cp -p $OPT_DIR/sbt-launcher.sh $SBT_BINDIR/sbt
+chmod a+x $SBT_BINDIR/sbt
 
-#echo -n "-----> Installing sbt.boot.properties..."
-curl --silent --max-time 10 --location $SBT_PROPS_URL --output "$SBT_BINDIR"/sbt.boot.properties
-#echo " done"
+# copy in heroku sbt plugin
+HEROKU_PLUGIN="HerokuPlugin.scala"
+mkdir -p "$SBT_USER_HOME/.sbt/plugins"
+cp -p $OPT_DIR/$HEROKU_PLUGIN $SBT_USER_HOME/.sbt/plugins/$HEROKU_PLUGIN
 
-
-#echo -n "-----> Intsalling plugins..."
-HEROKU_PLUGIN="Heroku-$SBT_VERSION.scala"
-mkdir -p "$SBT_USER_HOME/.sbt/plugins" && curl --silent --max-time 10 --location "http://s3.amazonaws.com/heroku-jvm-langpack-scala/$HEROKU_PLUGIN" --output "$SBT_USER_HOME/.sbt/plugins/$HEROKU_PLUGIN"
-
-HEROKU_PLUGINS_CONFIG="heroku-plugins-$SBT_VERSION.sbt"
-mkdir -p "$SBT_USER_HOME/.sbt/plugins" && curl --silent --max-time 10 --location "http://s3.amazonaws.com/heroku-jvm-langpack-scala/$HEROKU_PLUGINS_CONFIG"  --output "$SBT_USER_HOME/.sbt/plugins/$HEROKU_PLUGINS_CONFIG"
-#echo " done"
+# download and cache the dependencies if this is the first build
+if [ ! -d "$SBT_USER_HOME/.ivy2" ]; then
+  if is_sbt_native_packager $BUILD_DIR || is_play $BUILD_DIR; then
+    prime_ivy_cache "$BUILD_DIR" "$SBT_USER_HOME_ABSOLUTE" "$SBT_BINDIR/$SBT_JAR"
+    run_sbt "$SBT_USER_HOME_ABSOLUTE" "$SBT_BINDIR/$SBT_JAR" "update"
+    cache_copy $SBT_USER_HOME/.ivy2 $BUILD_DIR $CACHE_DIR
+  fi
+fi
 
 # build app
-SBT_TASKS="'project $SBT_MODULE'clean compile test stage"
-echo "-----> Running: sbt $SBT_TASKS"
-test -e "$SBT_BINDIR"/sbt.boot.properties && PROPS_OPTION="-Dsbt.boot.properties=$SBT_BINDIR/sbt.boot.properties"
-HOME="$SBT_USER_HOME_ABSOLUTE" java -Xmx512M -Dfile.encoding=UTF8 -Duser.home="$SBT_USER_HOME_ABSOLUTE" -Divy.default.ivy.user.dir="$SBT_USER_HOME_ABSOLUTE/.ivy2" $PROPS_OPTION -jar "$SBT_BINDIR"/$SBT_JAR $SBT_TASKS 2>&1 | sed -u 's/^/       /'
-if [ "${PIPESTATUS[*]}" != "0 0" ]; then
-  echo " !     Failed to $SBT_TASKS app with SBT $SBT_VERSION"
-  exit 1
-fi
+run_sbt "$SBT_USER_HOME_ABSOLUTE" "$SBT_BINDIR/$SBT_JAR" "$SBT_TASKS"
+
+PROFILE_PATH="$BUILD_DIR/.profile.d/scala.sh"
+mkdir -p $(dirname $PROFILE_PATH)
+echo 'export PATH="/app/.jdk/bin:$PATH"' >> $PROFILE_PATH
 
 # repack cache
 mkdir -p $CACHE_DIR
-for DIR in $CACHED_DIRS ; do
-  rm -rf $CACHE_DIR/$DIR
-  mkdir -p $CACHE_DIR/$DIR
-  cp -r $DIR/.  $CACHE_DIR/$DIR
-echo "-----> Dropping ivy cache from the slug: $DIR" 
-rm -rf $SBT_USER_HOME/.ivy2 
+for DIR in $CACHED_DIRS; do
+  cache_copy $DIR $BUILD_DIR $CACHE_DIR
 done
+
+# drop useless directories from slug for play and sbt-native-launcher only
+if is_sbt_native_packager $BUILD_DIR || is_play $BUILD_DIR; then
+  if [ -d $SBT_USER_HOME/.ivy2 ]; then
+    echo "-----> Dropping ivy cache from the slug"
+    rm -rf $SBT_USER_HOME/.ivy2
+  fi
+  if [ -d $BUILD_DIR/project/boot ] ; then
+    echo "-----> Dropping project boot dir from the slug"
+    rm -rf $BUILD_DIR/project/boot
+  fi
+  if [ -d $BUILD_DIR/target ] ; then
+    echo "-----> Dropping compilation artifacts from the slug"
+    rm -rf $BUILD_DIR/target/scala-*
+    rm -rf $BUILD_DIR/target/streams
+    rm -rf $BUILD_DIR/target/resolution-cache
+  fi
+fi
+
+# Move compiled app back to where Heroku expects it
+mv $BUILD_DIR $APP_BUILD_DIR
