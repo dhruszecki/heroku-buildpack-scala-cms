@@ -78,8 +78,8 @@ SBT_URL="http://typesafe.artifactoryonline.com/typesafe/ivy-releases/org.scala-s
 ## in 0.10 start-script will depend on package, if packaging
 ## is required - it may not be, we can run .class files or a package-war
 ## instead.
-MODULE="\"project platform\""
-SBT_TASKS="'project platform' compile stage"
+MODULE="\"project cms\""
+SBT_TASKS="'project cms' compile stage"
 
 # To enable clean compiles, configure the environment to clean:
 # $ heroku config:set SBT_CLEAN=true
